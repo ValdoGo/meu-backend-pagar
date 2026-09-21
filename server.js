@@ -1,4 +1,5 @@
 import express from 'express';
+import crypto from 'node:crypto';
 import { pagarGet, pagarPost } from './pagarClient.js';
 
 const app = express();
@@ -155,29 +156,50 @@ app.post('/api/carteira/payout', async (req, res) => {
 });
 
 // --------------------------------------------------------------------------
-// ROTA 4: RECEBER NOTIFICAÇÕES EM TEMPO REAL (WEBHOOK PAGAR API)
+// ROTA 4: RECEBER E VALIDAR NOTIFICAÇÕES EM TEMPO REAL (WEBHOOK)
 // --------------------------------------------------------------------------
 app.post('/api/carteira/webhook', (req, res) => {
   try {
+    const signatureHeader = req.headers['x-pagar-signature'];
+    const webhookSecret = process.env.PAGAR_WEBHOOK_SECRET;
+
+    // Validação de segurança via HMAC SHA-256
+    if (webhookSecret) {
+      if (!signatureHeader) {
+        console.warn('⚠️ Webhook rejeitado: Cabeçalho X-Pagar-Signature ausente.');
+        return res.status(401).json({ error: 'Assinatura ausente' });
+      }
+
+      const signatureReceived = signatureHeader.replace('v1=', '');
+      const rawBody = JSON.stringify(req.body);
+
+      const computedSignature = crypto
+        .createHmac('sha256', webhookSecret)
+        .update(rawBody)
+        .digest('hex');
+
+      if (signatureReceived !== computedSignature) {
+        console.error('❌ Webhook rejeitado: Assinatura HMAC inválida!');
+        return res.status(401).json({ error: 'Assinatura inválida' });
+      }
+    }
+
     const evento = req.body;
+    console.log('🔔 Webhook Autêntico Recebido:', JSON.stringify(evento, null, 2));
 
-    console.log('🔔 Webhook recebido da Pagar API:', JSON.stringify(evento, null, 2));
-
-    // Exemplo de manipulação conforme o estado
     const { event, data } = evento;
 
     if (event === 'topup.paid' || event === 'payout.paid') {
       console.log(`✅ Transação ${data.id || data.reference} confirmada com sucesso!`);
-      // Aqui podes atualizar uma base de dados local ou notificar a tua app/utilizador
     } else if (event === 'topup.failed' || event === 'payout.failed') {
       console.log(`❌ Transação ${data.id || data.reference} falhou.`);
     }
 
-    // A Pagar API exige uma resposta 200 OK imediata para saber que recebeste a notificação
-    res.status(200).json({ status: 'success', message: 'Webhook recebido com sucesso' });
+    res.status(200).json({ status: 'success', message: 'Webhook autenticado e processado com sucesso' });
+
   } catch (error) {
     console.error('Erro ao processar Webhook:', error.message);
-    res.status(500).json({ error: 'Erro ao processar Webhook' });
+    res.status(500).json({ error: 'Erro interno ao processar Webhook' });
   }
 });
 
