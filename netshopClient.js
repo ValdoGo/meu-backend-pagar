@@ -1,4 +1,4 @@
-import fetch from 'node-fetch'; // Se usares Node.js v18+, podes remover esta linha se preferires usar o fetch nativo
+
 
 const NETSHOP_BASE_URL = 'https://www.netshop.co.mz/api/v1';
 
