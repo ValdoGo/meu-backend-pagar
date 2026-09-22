@@ -1,8 +1,8 @@
-
+import fetch from 'node-fetch'; // Se usares Node.js v18+, podes remover esta linha se preferires usar o fetch nativo
 
 const NETSHOP_BASE_URL = 'https://www.netshop.co.mz/api/v1';
 
-// Mapeamento dinâmico das Carteiras NetShop por Método de Pagamento
+// Mapeamento dinâmico do Wallet ID com base no método de pagamento
 export function getWalletIdByMethod(method) {
   const met = (method || '').toLowerCase();
   
@@ -16,11 +16,11 @@ export function getWalletIdByMethod(method) {
     return process.env.NETSHOP_WALLET_BCI || '254359';
   }
 
-  // Wallet Padrão de reserva
+  // Wallet de reserva (fallback)
   return process.env.NETSHOP_WALLET_ID || '179454';
 }
 
-// Função GET aceitando o walletId dinâmico
+// Requisições GET com detalhamento de erros
 export async function netshopGet(endpoint, walletId = null) {
   const apiKey = process.env.NETSHOP_API_KEY;
   const activeWallet = walletId || process.env.NETSHOP_WALLET_ID || '179454';
@@ -35,13 +35,16 @@ export async function netshopGet(endpoint, walletId = null) {
   });
 
   const data = await response.json();
+
   if (!response.ok) {
-    throw new Error(data.message || data.error || 'Erro na requisição NetShop');
+    const detalhe = data.message || data.error || data.failed_reason || JSON.stringify(data);
+    throw new Error(`[HTTP ${response.status}] ${detalhe}`);
   }
+
   return data;
 }
 
-// Função POST aceitando o walletId dinâmico
+// Requisições POST com detalhamento de erros e Idempotência
 export async function netshopPost(endpoint, body, idempotencyKey = null, walletId = null) {
   const apiKey = process.env.NETSHOP_API_KEY;
   const activeWallet = walletId || process.env.NETSHOP_WALLET_ID || '179454';
@@ -63,8 +66,11 @@ export async function netshopPost(endpoint, body, idempotencyKey = null, walletI
   });
 
   const data = await response.json();
+
   if (!response.ok) {
-    throw new Error(data.message || data.error || 'Erro na requisição NetShop');
+    const detalhe = data.message || data.error || data.failed_reason || JSON.stringify(data);
+    throw new Error(`[HTTP ${response.status}] ${detalhe}`);
   }
+
   return data;
 }
