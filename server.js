@@ -1,11 +1,10 @@
 import express from 'express';
 import crypto from 'node:crypto';
-import { netshopGet, netshopPost } from './netshopClient.js';
+import { netshopGet, netshopPost, getWalletIdByMethod } from './netshopClient.js';
 
 const app = express();
 app.use(express.json());
 
-// Permite requisições do teu APK / Frontend (CORS básico)
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, X-Wallet-ID, Authorization');
@@ -16,16 +15,15 @@ app.use((req, res, next) => {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Polling ativo para verificar alteração de estado nas transações NetShop
-async function aguardarAteConcluir(endpoint, maxTentativas = 18, intervaloMs = 10000) {
+// Polling dinâmico enviando o walletId correspondente
+async function aguardarAteConcluir(endpoint, walletId, maxTentativas = 18, intervaloMs = 10000) {
   for (let i = 0; i < maxTentativas; i++) {
     await sleep(intervaloMs);
 
-    const data = await netshopGet(endpoint);
-    // A NetShop devolve o objeto diretamente ou o próprio estado
+    const data = await netshopGet(endpoint, walletId);
     const status = data.status;
 
-    console.log(`[Polling Render - Tentativa ${i + 1}/${maxTentativas}] Estado: ${status}`);
+    console.log(`[Polling NetShop - Tentativa ${i + 1}/${maxTentativas}] Wallet: ${walletId} | Estado: ${status}`);
 
     if (status !== 'pending' && status !== 'PROCESSING') {
       return data;
@@ -36,23 +34,23 @@ async function aguardarAteConcluir(endpoint, maxTentativas = 18, intervaloMs = 1
 }
 
 // --------------------------------------------------------------------------
-// ROTA 0: HEALTH-CHECK DO SERVIDOR E VALIDAÇÃO DA NETSHOP BASE URL
+// ROTA 0: HEALTH CHECK
 // --------------------------------------------------------------------------
 app.get('/', async (req, res) => {
   try {
     const ping = await netshopGet('/ping');
     res.json({
       status: 'online',
-      message: 'Backend NetShop API operacional no Render!',
+      message: 'Backend NetShop API operacional no Render com suporte a múltiplas carteiras!',
       netshopPing: ping
     });
   } catch (error) {
-    res.json({ status: 'online', message: 'Backend a correr, mas com erro no ping NetShop', error: error.message });
+    res.json({ status: 'online', message: 'Backend a correr com aviso no ping', error: error.message });
   }
 });
 
 // --------------------------------------------------------------------------
-// ROTA 1: CARREGAR A CARTEIRA / COBRANÇA (TOP-UP VIA M-PESA, EMOLA, MKESH OU CARD)
+// ROTA 1: COBRANÇA / RECARGA DA CARTEIRA (TOP-UP)
 // --------------------------------------------------------------------------
 app.post('/api/carteira/topup', async (req, res) => {
   try {
@@ -65,7 +63,9 @@ app.post('/api/carteira/topup', async (req, res) => {
     const ref = reference || `topup-${Date.now()}`;
     const met = (method || 'mpesa').toLowerCase();
 
-    // Formatação do número de telefone (NetShop exige formato internacional como +258...)
+    // Seleciona a Wallet adequada com base no método
+    const activeWallet = getWalletIdByMethod(met);
+
     let formattedPhone = phone ? phone.trim() : '';
     if (formattedPhone && !formattedPhone.startsWith('+')) {
       formattedPhone = formattedPhone.startsWith('258') ? `+${formattedPhone}` : `+258${formattedPhone}`;
@@ -76,21 +76,21 @@ app.post('/api/carteira/topup', async (req, res) => {
       currency: 'MZN',
       method: met,
       reference: ref,
-      metadata: { source: 'carteira_topup' }
+      metadata: { source: 'carteira_topup', wallet_used: activeWallet }
     };
 
-    if (met === 'card') {
+    if (met === 'card' || met === 'bci') {
       if (email) payload.customer_email = email;
     } else {
       payload.msisdn = formattedPhone;
     }
 
-    const chargeResponse = await netshopPost('/charges', payload, ref);
+    // Passa a carteira selecionada como 4º argumento
+    const chargeResponse = await netshopPost('/charges', payload, ref, activeWallet);
 
-    console.log(`Cobrança iniciada (ID: ${chargeResponse.id}). Estado inicial: ${chargeResponse.status}`);
+    console.log(`Cobrança iniciada na Wallet [${activeWallet}] (ID: ${chargeResponse.id}). Estado: ${chargeResponse.status}`);
 
-    // Se for Cartão, devolve o link de checkout hospedado
-    if (met === 'card' && chargeResponse.checkout) {
+    if ((met === 'card' || met === 'bci') && chargeResponse.checkout) {
       return res.json({
         sucesso: true,
         requerRedirecionamento: true,
@@ -99,22 +99,20 @@ app.post('/api/carteira/topup', async (req, res) => {
       });
     }
 
-    // Se já foi pago síncronamente
     if (chargeResponse.status === 'paid') {
       return res.json({
         sucesso: true,
-        message: 'Recarga concluída e saldo creditado com sucesso!',
+        message: 'Recarga concluída e saldo creditado!',
         charge: chargeResponse
       });
     }
 
-    // Se ficou em 'pending', aguarda via polling
-    const resultadoFinal = await aguardarAteConcluir(`/charges/${chargeResponse.id}`);
+    const resultadoFinal = await aguardarAteConcluir(`/charges/${chargeResponse.id}`, activeWallet);
 
     if (resultadoFinal.status === 'paid') {
       return res.json({
         sucesso: true,
-        message: 'Recarga concluída e saldo creditado com sucesso!',
+        message: 'Recarga concluída e saldo creditado!',
         charge: resultadoFinal
       });
     } else {
@@ -132,7 +130,7 @@ app.post('/api/carteira/topup', async (req, res) => {
 });
 
 // --------------------------------------------------------------------------
-// ROTA 2: ENVIAR DINHEIRO / LEVANTAMENTO (PAYOUT B2C)
+// ROTA 2: LEVANTAMENTO / TRANSFERÊNCIA (PAYOUT)
 // --------------------------------------------------------------------------
 app.post('/api/carteira/payout', async (req, res) => {
   try {
@@ -145,6 +143,9 @@ app.post('/api/carteira/payout', async (req, res) => {
     const ref = reference || `payout-${Date.now()}`;
     const met = (method || 'mpesa').toLowerCase();
 
+    // Seleciona a Wallet adequada
+    const activeWallet = getWalletIdByMethod(met);
+
     let formattedPhone = recipientPhone ? recipientPhone.trim() : '';
     if (formattedPhone && !formattedPhone.startsWith('+')) {
       formattedPhone = formattedPhone.startsWith('258') ? `+${formattedPhone}` : `+258${formattedPhone}`;
@@ -156,10 +157,10 @@ app.post('/api/carteira/payout', async (req, res) => {
       method: met,
       msisdn: formattedPhone,
       reference: ref,
-      metadata: { purpose: 'levantamento_carteira' }
-    }, ref);
+      metadata: { purpose: 'levantamento_carteira', wallet_used: activeWallet }
+    }, ref, activeWallet);
 
-    console.log(`Payout iniciado (ID: ${payoutResponse.id}). Estado: ${payoutResponse.status}`);
+    console.log(`Payout iniciado na Wallet [${activeWallet}] (ID: ${payoutResponse.id}). Estado: ${payoutResponse.status}`);
 
     if (payoutResponse.status === 'completed') {
       return res.json({
@@ -169,7 +170,7 @@ app.post('/api/carteira/payout', async (req, res) => {
       });
     }
 
-    const resultadoFinal = await aguardarAteConcluir(`/payouts/${payoutResponse.id}`);
+    const resultadoFinal = await aguardarAteConcluir(`/payouts/${payoutResponse.id}`, activeWallet);
 
     if (resultadoFinal.status === 'completed') {
       return res.json({
@@ -192,17 +193,15 @@ app.post('/api/carteira/payout', async (req, res) => {
 });
 
 // --------------------------------------------------------------------------
-// ROTA 3: RECEBER E VALIDAR WEBHOOKS DA NETSHOP
+// ROTA 3: WEBHOOK NETSHOP
 // --------------------------------------------------------------------------
 app.post('/api/carteira/webhook', (req, res) => {
   try {
     const signatureHeader = req.headers['x-netshop-signature'];
     const webhookSecret = process.env.NETSHOP_WEBHOOK_SECRET;
 
-    // Validação de segurança via HMAC SHA-256
     if (webhookSecret) {
       if (!signatureHeader) {
-        console.warn('⚠️ Webhook rejeitado: Cabeçalho X-NetShop-Signature ausente.');
         return res.status(401).json({ error: 'Assinatura ausente' });
       }
 
@@ -212,12 +211,10 @@ app.post('/api/carteira/webhook', (req, res) => {
         .update(rawBody)
         .digest('hex');
 
-      // Validação timingSafeEqual para prevenção contra timing attacks
       const signatureBuffer = Buffer.from(signatureHeader, 'utf8');
       const computedBuffer = Buffer.from(computedSignature, 'utf8');
 
       if (signatureBuffer.length !== computedBuffer.length || !crypto.timingSafeEqual(signatureBuffer, computedBuffer)) {
-        console.error('❌ Webhook rejeitado: Assinatura NetShop HMAC inválida!');
         return res.status(401).json({ error: 'Assinatura inválida' });
       }
     }
@@ -225,20 +222,7 @@ app.post('/api/carteira/webhook', (req, res) => {
     const evento = req.body;
     console.log('🔔 Webhook Autêntico Recebido da NetShop:', JSON.stringify(evento, null, 2));
 
-    const { event, data } = evento;
-
-    // Eventos enviados pela NetShop
-    if (event === 'charge.paid') {
-      console.log(`✅ Cobrança ${data?.id || data?.reference} PAGA com sucesso!`);
-    } else if (event === 'charge.failed') {
-      console.log(`❌ Cobrança ${data?.id || data?.reference} FALHOU.`);
-    } else if (event === 'payout.completed') {
-      console.log(`✅ Payout ${data?.id || data?.reference} CONCLUÍDO com sucesso!`);
-    } else if (event === 'payout.failed') {
-      console.log(`❌ Payout ${data?.id || data?.reference} FALHOU.`);
-    }
-
-    res.status(200).json({ status: 'success', message: 'Webhook NetShop processado com sucesso' });
+    res.status(200).json({ status: 'success', message: 'Webhook recebido com sucesso' });
 
   } catch (error) {
     console.error('Erro ao processar Webhook NetShop:', error.message);
@@ -246,6 +230,5 @@ app.post('/api/carteira/webhook', (req, res) => {
   }
 });
 
-// O Render injeta automaticamente a variável PORT no ambiente
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor NetShop a correr na porta ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor NetShop ativo na porta ${PORT}`));
