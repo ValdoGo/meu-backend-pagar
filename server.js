@@ -47,11 +47,10 @@ app.post('/api/carteira/topup', async (req, res) => {
   try {
     const { method, phone, email, amountMzn } = req.body;
 
-    // Converte o método "bci" vindo do frontend para "card", exigido pela NetShop
+    // Normaliza o método ("bci" -> "card")
     const normalizedMethod = (method === 'bci') ? 'card' : (method || '').toLowerCase();
     const walletId = getWalletIdByMethod(normalizedMethod);
 
-    // Estrutura base do payload de acordo com a documentação
     const payload = {
       amount: Number(amountMzn),
       currency: 'MZN',
@@ -59,13 +58,12 @@ app.post('/api/carteira/topup', async (req, res) => {
       reference: `DEP_${Date.now()}`
     };
 
-    // Formatação de carteiras móveis (mpesa, emola, mkesh)
+    // Formatação para Carteiras Móveis (M-Pesa, eMola, mKesh)
     if (['mpesa', 'emola', 'mkesh', 'mcash'].includes(normalizedMethod)) {
       if (!phone) {
         return res.status(400).json({ sucesso: false, error: 'O número de telefone é obrigatório para carteiras móveis.' });
       }
 
-      // Limpa caracteres e garante prefixo +258
       let cleanPhone = phone.replace(/\D/g, '');
       if (cleanPhone.startsWith('258')) {
         cleanPhone = cleanPhone.substring(3);
@@ -85,14 +83,23 @@ app.post('/api/carteira/topup', async (req, res) => {
     // Dispara requisição para POST /charges na NetShop
     const result = await netshopPost('/charges', payload, null, walletId);
 
-    const isHosted = result.checkout && result.checkout.type === 'hosted_url';
-    const redirectUrl = isHosted ? result.checkout.hosted_url : null;
+    // Extrai o link de checkout hospedado (caso exista na resposta da NetShop)
+    const checkoutUrl = result.checkout?.hosted_url || result.checkout?.url || null;
+
+    if (normalizedMethod === 'card' && checkoutUrl) {
+      return res.json({
+        sucesso: true,
+        requerRedirecionamento: true,
+        checkoutUrl: checkoutUrl,
+        message: 'Redirecionando para a tela de checkout...',
+        data: result
+      });
+    }
 
     return res.json({
       sucesso: true,
-      message: isHosted ? 'Redirecionando para o Checkout...' : 'Cobrança iniciada! Confirme no telemóvel.',
-      checkoutUrl: redirectUrl,
-      requerRedirecionamento: !!redirectUrl,
+      requerRedirecionamento: false,
+      message: 'Cobrança iniciada! Confirme no telemóvel.',
       data: result
     });
 
