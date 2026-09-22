@@ -1,16 +1,23 @@
-
-
 const NETSHOP_BASE_URL = 'https://www.netshop.co.mz/api/v1';
 
-// Mapeamento dinâmico do Wallet ID com base no método de pagamento
+/**
+ * Mapeamento dinâmico do Wallet ID com base no método de pagamento (4 Métodos)
+ * - M-Pesa: 179454
+ * - mKesh / MCash: 383886
+ * - eMola: 12345
+ * - BCI / Cartão: 254359
+ */
 export function getWalletIdByMethod(method) {
   const met = (method || '').toLowerCase();
   
   if (met === 'mpesa') {
     return process.env.NETSHOP_WALLET_MPESA || '179454';
   }
-  if (met === 'mcash' || met === 'emola') {
+  if (met === 'mcash' || met === 'mkesh') {
     return process.env.NETSHOP_WALLET_MCASH || '383886';
+  }
+  if (met === 'emola') {
+    return process.env.NETSHOP_WALLET_EMOLA || '12345';
   }
   if (met === 'bci' || met === 'bank' || met === 'card') {
     return process.env.NETSHOP_WALLET_BCI || '254359';
