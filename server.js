@@ -118,7 +118,10 @@ app.post('/api/carteira/payout', async (req, res) => {
     const { method, recipientPhone, amountMzn } = req.body;
 
     const normalizedMethod = (method || '').toLowerCase();
-    const walletId = getWalletIdByMethod(normalizedMethod);
+
+    // Em Payouts, usamos a Carteira Principal B2C (ou process.env.NETSHOP_MAIN_WALLET_ID)
+    // Se passar um Wallet ID incompatível de cobrança C2B, a API gera 403 wallet_id_mismatch
+    const walletId = process.env.NETSHOP_MAIN_WALLET_ID || getWalletIdByMethod('main') || null;
 
     let cleanPhone = (recipientPhone || '').replace(/\D/g, '');
     if (cleanPhone.startsWith('258')) {
@@ -128,11 +131,12 @@ app.post('/api/carteira/payout', async (req, res) => {
     const payload = {
       amount: Number(amountMzn),
       currency: 'MZN',
-      method: normalizedMethod,
+      method: normalizedMethod, // mpesa | emola
       msisdn: `+258${cleanPhone}`,
       reference: `PAY_${Date.now()}`
     };
 
+    // Dispara requisição para POST /payouts na NetShop
     const result = await netshopPost('/payouts', payload, null, walletId);
 
     return res.json({
@@ -143,9 +147,19 @@ app.post('/api/carteira/payout', async (req, res) => {
 
   } catch (error) {
     console.error('❌ Erro no Payout:', error.message);
+
+    let mensagemAmigavel = error.message;
+
+    // Trata erros de Wallet ID incompatível / B2C bloqueado
+    if (error.message.includes('403') || error.message.includes('wallet_id_mismatch') || error.message.includes('b2c disabled')) {
+      mensagemAmigavel = 'Erro de permissão (HTTP 403): O Wallet ID utilizado não possui a função B2C/Payout ativa na NetShop ou não corresponde à conta principal.';
+    } else if (error.message.includes('422') || error.message.includes('insufficient_balance')) {
+      mensagemAmigavel = 'Saldo insuficiente na carteira NetShop para realizar o levantamento.';
+    }
+
     return res.status(400).json({
       sucesso: false,
-      error: error.message
+      error: mensagemAmigavel
     });
   }
 });
