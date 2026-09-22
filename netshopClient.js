@@ -1,4 +1,4 @@
-import fetch from 'node-fetch';
+
 
 const NETSHOP_BASE_URL = 'https://www.netshop.co.mz/api/v1';
 
