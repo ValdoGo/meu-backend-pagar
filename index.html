@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Carteira Digital - NetShop API</title>
+  <style>
+    * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    body { background-color: #f4f6f8; margin: 0; padding: 20px; display: flex; justify-content: center; }
+    .container { max-width: 450px; width: 100%; background: #ffffff; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+    h2 { color: #1a202c; margin-top: 0; text-align: center; }
+    
+    .card { background: #0070f3; color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; text-align: center; }
+    .card h3 { margin: 0 0 5px 0; font-size: 14px; text-transform: uppercase; opacity: 0.8; }
+    .card .balance { font-size: 28px; font-weight: bold; }
+    
+    .tabs { display: flex; margin-bottom: 20px; border-bottom: 2px solid #edf2f7; }
+    .tab { flex: 1; padding: 10px; text-align: center; cursor: pointer; font-weight: bold; color: #718096; }
+    .tab.active { color: #0070f3; border-bottom: 2px solid #0070f3; }
+    
+    .form-group { margin-bottom: 15px; }
+    label { display: block; margin-bottom: 5px; font-size: 14px; font-weight: 600; color: #4a5568; }
+    input, select { width: 100%; padding: 10px; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 14px; }
+    
+    button { width: 100%; padding: 12px; background-color: #0070f3; color: white; border: none; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; transition: background 0.2s; }
+    button:hover { background-color: #0051a2; }
+    button:disabled { background-color: #a0aec0; cursor: not-allowed; }
+    
+    .status { margin-top: 15px; padding: 12px; border-radius: 6px; display: none; font-size: 14px; word-break: break-word; }
+    .status.info { background-color: #ebf8ff; color: #2b6cb0; border: 1px solid #bee3f8; }
+    .status.success { background-color: #f0fff4; color: #276749; border: 1px solid #c6f6d5; }
+    .status.error { background-color: #fff5f5; color: #9b2c2c; border: 1px solid #fed7d7; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h2>Carteira Digital (NetShop)</h2>
+
+  <!-- CARD DE SALDO -->
+  <div class="card">
+    <h3>Estado da Gateway</h3>
+    <div class="balance" id="saldoText">--</div>
+    <button onclick="consultarSaldo()" style="margin-top: 10px; padding: 6px; font-size: 12px; background: rgba(255,255,255,0.2);">Atualizar Estado</button>
+  </div>
+
+  <!-- NAVEGAÇÃO -->
+  <div class="tabs">
+    <div class="tab active" id="tabTopup" onclick="alternarAba('topup')">Depósito</div>
+    <div class="tab" id="tabPayout" onclick="alternarAba('payout')">Levantamento</div>
+  </div>
+
+  <!-- FORMULÁRIO DEPÓSITO -->
+  <form id="formTopup" onsubmit="executarTopup(event)">
+    <div class="form-group">
+      <label>Método de Pagamento</label>
+      <select id="topupMethod" onchange="tratarMudancaMetodo()">
+        <option value="mpesa">M-Pesa (Vodacom)</option>
+        <option value="emola">eMola (Movitel)</option>
+        <option value="mkesh">mKesh</option>
+        <option value="card">BCI / Cartão (Visa / Mastercard)</option>
+      </select>
+    </div>
+
+    <div class="form-group" id="groupTopupPhone">
+      <label>Número de Telefone</label>
+      <input type="text" id="topupPhone" placeholder="Ex: 842828600 ou 861234567" value="842828600">
+    </div>
+
+    <div class="form-group" id="groupTopupEmail" style="display: none;">
+      <label>E-mail do Cliente</label>
+      <input type="email" id="topupEmail" placeholder="cliente@exemplo.mz" value="cliente@exemplo.mz">
+    </div>
+
+    <div class="form-group">
+      <label>Valor (MZN)</label>
+      <input type="number" id="topupAmount" min="10" max="100000" placeholder="Mínimo 10 MZN" value="100" required>
+    </div>
+    <button type="submit" id="btnTopup">Fazer Depósito</button>
+  </form>
+
+  <!-- FORMULÁRIO LEVANTAMENTO -->
+  <form id="formPayout" onsubmit="executarPayout(event)" style="display: none;">
+    <div class="form-group">
+      <label>Método de Destino</label>
+      <select id="payoutMethod">
+        <option value="mpesa">M-Pesa (Vodacom)</option>
+        <option value="emola">eMola (Movitel)</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Telefone de Destino</label>
+      <input type="text" id="payoutPhone" placeholder="Ex: 842828600 ou 861234567" value="842828600" required>
+    </div>
+    <div class="form-group">
+      <label>Valor (MZN)</label>
+      <input type="number" id="payoutAmount" min="10" max="100000" placeholder="Mínimo 10 MZN" value="50" required>
+    </div>
+    <button type="submit" id="btnPayout">Solicitar Levantamento</button>
+  </form>
+
+  <!-- CAIXA DE STATUS -->
+  <div id="statusBox" class="status"></div>
+</div>
+
+<script>
+  const BACKEND_URL = 'https://meu-backend-pagar.onrender.com';
+
+  function alternarAba(tipo) {
+    const isTopup = tipo === 'topup';
+    document.getElementById('formTopup').style.display = isTopup ? 'block' : 'none';
+    document.getElementById('formPayout').style.display = isTopup ? 'none' : 'block';
+    
+    document.getElementById('tabTopup').classList.toggle('active', isTopup);
+    document.getElementById('tabPayout').classList.toggle('active', !isTopup);
+    ocultarStatus();
+  }
+
+  function tratarMudancaMetodo() {
+    const method = document.getElementById('topupMethod').value;
+    const isCard = method === 'card';
+    
+    document.getElementById('groupTopupPhone').style.display = isCard ? 'none' : 'block';
+    document.getElementById('groupTopupEmail').style.display = isCard ? 'block' : 'none';
+    
+    const amountInput = document.getElementById('topupAmount');
+    if (isCard) {
+      amountInput.min = 50;
+      amountInput.placeholder = 'Mínimo 50 MZN (Cartão)';
+    } else {
+      amountInput.min = 10;
+      amountInput.placeholder = 'Mínimo 10 MZN';
+    }
+  }
+
+  function mostrarStatus(mensagem, tipo) {
+    const statusBox = document.getElementById('statusBox');
+    statusBox.className = `status ${tipo}`;
+    statusBox.innerText = mensagem;
+    statusBox.style.display = 'block';
+  }
+
+  function ocultarStatus() {
+    document.getElementById('statusBox').style.display = 'none';
+  }
+
+  async function consultarSaldo() {
+    try {
+      const response = await fetch(`${BACKEND_URL}/`);
+      const data = await response.json();
+
+      if (response.ok && data.status === 'online') {
+        document.getElementById('saldoText').innerText = `Ativo`;
+      } else {
+        document.getElementById('saldoText').innerText = 'Erro';
+      }
+    } catch (err) {
+      document.getElementById('saldoText').innerText = 'Offline';
+    }
+  }
+
+  async function executarTopup(event) {
+    event.preventDefault();
+    const btn = document.getElementById('btnTopup');
+    btn.disabled = true;
+
+    const method = document.getElementById('topupMethod').value;
+    const phone = document.getElementById('topupPhone').value.trim();
+    const email = document.getElementById('topupEmail').value.trim();
+    const amountMzn = parseFloat(document.getElementById('topupAmount').value);
+
+    mostrarStatus('Iniciando pagamento na NetShop... Aguarde.', 'info');
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/carteira/topup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method, phone, email, amountMzn })
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.sucesso) {
+        if (data.requerRedirecionamento && data.checkoutUrl) {
+          mostrarStatus('Redirecionando para a página de pagamento...', 'info');
+          window.location.href = data.checkoutUrl;
+        } else {
+          mostrarStatus('🎉 ' + data.message, 'success');
+        }
+      } else {
+        mostrarStatus('❌ ' + (data.error || 'Erro ao processar cobrança'), 'error');
+      }
+    } catch (err) {
+      mostrarStatus('Erro de conexão ao processar o depósito.', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function executarPayout(event) {
+    event.preventDefault();
+    const btn = document.getElementById('btnPayout');
+    btn.disabled = true;
+
+    const method = document.getElementById('payoutMethod').value;
+    const recipientPhone = document.getElementById('payoutPhone').value.trim();
+    const amountMzn = parseFloat(document.getElementById('payoutAmount').value);
+
+    mostrarStatus('Processando envio via NetShop...', 'info');
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/carteira/payout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method, recipientPhone, amountMzn })
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.sucesso) {
+        mostrarStatus('🎉 ' + data.message, 'success');
+      } else {
+        mostrarStatus('❌ ' + (data.error || 'Erro no levantamento'), 'error');
+      }
+    } catch (err) {
+      mostrarStatus('Erro de conexão ao processar levantamento.', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  consultarSaldo();
+</script>
+
+</body>
+</html>
